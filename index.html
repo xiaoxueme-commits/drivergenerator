@@ -1,0 +1,636 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>DRIVER GENERATOR</title>
+<style>
+  :root{
+    --bg:#000;
+    --ink:#fff;
+    --hair:rgba(255,255,255,0.18);
+    --hair-strong:rgba(255,255,255,0.35);
+    --dim:rgba(255,255,255,0.45);
+    --panel:rgba(0,0,0,0.62);
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  *{ box-sizing:border-box; }
+  html,body{
+    margin:0; padding:0; height:100%;
+    background:var(--bg); color:var(--ink);
+    overflow:hidden;
+    font-family:var(--mono);
+    -webkit-font-smoothing:antialiased;
+  }
+  #field{ position:fixed; inset:0; display:block; z-index:0; }
+
+  /* ---- HUD ---- */
+  #hud{
+    position:fixed; left:50%; top:50%;
+    transform:translate(-50%,-50%);
+    z-index:10;
+    width:min(560px, calc(100vw - 32px));
+    background:var(--panel);
+    border:1px solid var(--hair-strong);
+    -webkit-backdrop-filter:blur(2px); backdrop-filter:blur(2px);
+    padding:18px 20px 16px;
+    user-select:none;
+  }
+  /* corner registration ticks on the panel — instrument framing */
+  #hud::before, #hud::after{
+    content:""; position:absolute; width:9px; height:9px; pointer-events:none;
+    border-color:var(--hair-strong); border-style:solid;
+  }
+  #hud::before{ left:-1px; top:-1px; border-width:1px 0 0 1px; }
+  #hud::after{ right:-1px; bottom:-1px; border-width:0 1px 1px 0; }
+
+  .head{ display:flex; align-items:baseline; justify-content:space-between; gap:12px; }
+  .title{ font-size:13px; letter-spacing:0.42em; font-weight:600; }
+  .status{ font-size:10px; letter-spacing:0.18em; color:var(--dim); white-space:nowrap; }
+
+  .rule{ height:1px; background:var(--hair); margin:14px 0 12px; }
+
+  .group{ margin:0 0 12px; }
+  .group:last-of-type{ margin-bottom:4px; }
+  .glabel{ font-size:10px; letter-spacing:0.34em; color:var(--dim); margin:0 0 8px; }
+
+  .toggles{ display:flex; flex-wrap:wrap; gap:6px; }
+  .tg{
+    appearance:none; cursor:pointer;
+    font-family:var(--mono); font-size:11px; letter-spacing:0.16em;
+    color:var(--ink); background:transparent;
+    border:1px solid var(--hair);
+    padding:6px 9px; line-height:1;
+    transition:background .18s ease, color .18s ease, border-color .18s ease, opacity .18s ease;
+    opacity:0.7;
+  }
+  .tg:hover{ opacity:1; border-color:var(--hair-strong); }
+  .tg:focus-visible{ outline:1px solid var(--ink); outline-offset:2px; }
+  .tg[aria-pressed="true"]{
+    background:var(--ink); color:#000; border-color:var(--ink); opacity:1;
+  }
+
+  .foot{ display:flex; gap:6px; margin-top:14px; }
+  .foot .tg{ flex:1; text-align:center; padding:8px 9px; letter-spacing:0.2em; }
+
+  .hint{
+    position:fixed; left:50%; bottom:14px; transform:translateX(-50%);
+    z-index:10; font-size:10px; letter-spacing:0.22em; color:rgba(255,255,255,0.3);
+    pointer-events:none;
+  }
+
+  @media (prefers-reduced-motion: reduce){
+    .tg{ transition:none; }
+  }
+</style>
+</head>
+<body>
+  <canvas id="field"></canvas>
+
+  <section id="hud" aria-label="Driver Generator control panel">
+    <div class="head">
+      <div class="title">DRIVER&nbsp;GENERATOR</div>
+      <div class="status" id="status">FORM CIRCLES · MODE ILLUMINATION</div>
+    </div>
+
+    <div class="rule"></div>
+
+    <div class="group">
+      <div class="glabel">CATEGORY</div>
+      <div class="toggles" id="catGroup">
+        <button class="tg" data-cat="ILLUMINATION" aria-pressed="true">ILLUMINATION</button>
+        <button class="tg" data-cat="AUTOMATION" aria-pressed="false">AUTOMATION</button>
+        <button class="tg" data-cat="SCALE" aria-pressed="false">SCALE</button>
+        <button class="tg" data-cat="INTELLIGENCE" aria-pressed="false">INTELLIGENCE</button>
+      </div>
+    </div>
+
+    <div class="group">
+      <div class="glabel">BASE FORM</div>
+      <div class="toggles" id="formGroup">
+        <button class="tg" data-form="BRACKETS" aria-pressed="false">BRACKETS</button>
+        <button class="tg" data-form="CROSSHAIRS" aria-pressed="false">CROSSHAIRS</button>
+        <button class="tg" data-form="CIRCLES" aria-pressed="true">CIRCLES</button>
+        <button class="tg" data-form="LINES" aria-pressed="false">LINES</button>
+        <button class="tg" data-form="DASHPIPES" aria-pressed="false">DASHPIPES</button>
+      </div>
+    </div>
+
+    <div class="rule"></div>
+
+    <div class="foot">
+      <button class="tg" id="exportPng">EXPORT PNG</button>
+      <button class="tg" id="exportVec">EXPORT VECTOR</button>
+    </div>
+  </section>
+
+  <div class="hint">CHANGE A CONTROL — THE FIELD RIPPLES FROM CENTER</div>
+
+<script>
+(() => {
+  "use strict";
+
+  const cv = document.getElementById("field");
+  const ctx = cv.getContext("2d", { alpha: false });
+
+  // ---- config ----------------------------------------------------------
+  const CELL = 30;            // target cell size (css px)
+  const WAVE_K = 1.05;        // ms of arrival delay per px from center
+
+  // --- field baseline (kept low so active cells have real contrast to pop from) ---
+  const REST_ALPHA = 0.15;    // dim resting brightness of the whole field
+  const REST_SCALE = 0.90;    // slightly small at rest so SCALE growth reads
+  const STATIC_ALPHA = 0.82;  // used only when prefers-reduced-motion
+
+  // --- CENTER emitter gains (permanent, deliberately subtle) ---
+  const CEN_B = 0.22, CEN_S = 0.10, CEN_R = 0.20;
+  // --- CURSOR emitter gains (dominant: the bloom is the hero) ---
+  const CUR_B = 1.05, CUR_S = 0.70, CUR_R = 1.30; // brightness / scale / rotation gains
+
+  // --- cursor model: a ringless glow under the pointer + discrete ripples shed
+  //     along the path. Each ripple is anchored at its spawn point/time and
+  //     expands on its own (radius = age x speed), like disturbing water. ---
+  const POS_LERP     = 0.16;   // glow eases toward the mouse (slight trail)
+  const GLOW_SIGMA   = 66;     // px — soft radial bloom under the cursor (no rings)
+  const GLOW_STRENGTH= 0.95;
+  const SPAWN_DIST   = 30;     // shed one ripple per ~30px of mouse travel
+  const RIP_LIFE     = 1050;   // ms a ripple lives
+  const RIP_SPEED    = 0.20;   // px/ms the ring expands (=> ~220px over its life)
+  const RIP_SIGMA    = 19;     // px — ring thickness (gaussian)
+  const MAX_RIPPLES  = 120;
+
+  const WAVE_DUR = 720;       // ms each cell spends transitioning
+
+  const FORMS = ["BRACKETS","CROSSHAIRS","CIRCLES","LINES","DASHPIPES"];
+
+  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // ---- state -----------------------------------------------------------
+  let W = 0, H = 0, dpr = 1, cols = 0, rows = 0, cellW = CELL, cellH = CELL;
+  let cx = 0, cy = 0, maxDist = 1;
+  let cells = [];
+
+  let currentForm = "CIRCLES";
+  let currentCat  = "ILLUMINATION";
+
+  // active wavefront (one at a time; cells blend from their own committed form)
+  let wave = { t: -1e9, type: "form", target: "CIRCLES" };
+
+  // ---- cursor emitter state ----
+  let ptrX = -1e9, ptrY = -1e9;   // latest pointer position in canvas css-px space
+  let curX = -1e9, curY = -1e9;   // eased glow position (trails the mouse)
+  let ptrPresence = 0;            // eased 0..1 (fades in on enter, out on leave)
+  let ptrTarget = 0;              // desired presence
+  let ripples = [];               // anchored, self-expanding ring pulses (the wake)
+  let lastSpawnX = -1e9, lastSpawnY = -1e9, ripSeed = 1; // distance-throttled shedding
+
+  // ---- easing ----------------------------------------------------------
+  const clamp = (v,a,b)=> v<a?a : v>b?b : v;
+  const easeInOut = t => t<0.5 ? 4*t*t*t : 1 - Math.pow(-2*t+2,3)/2;
+  // a smooth 0->1->0 bell with a touch of overshoot character
+  const bell = t => Math.sin(t*Math.PI);
+  // deterministic per-cell hash -> [0,1)
+  const hash = n => { const x = Math.sin(n*127.1)*43758.5453; return x - Math.floor(x); };
+
+  // ---- grid ------------------------------------------------------------
+  function layout(){
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth; H = window.innerHeight;
+    cv.width  = Math.floor(W*dpr);
+    cv.height = Math.floor(H*dpr);
+    cv.style.width = W+"px"; cv.style.height = H+"px";
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+
+    cols = Math.max(1, Math.round(W/CELL));
+    rows = Math.max(1, Math.round(H/CELL));
+    cellW = W/cols; cellH = H/rows;
+    cx = W/2; cy = H/2;
+
+    cells = new Array(cols*rows);
+    maxDist = 1;
+    let i = 0;
+    for(let r=0;r<rows;r++){
+      for(let c=0;c<cols;c++){
+        const x = (c+0.5)*cellW;
+        const y = (r+0.5)*cellH;
+        const dist = Math.hypot(x-cx, y-cy);
+        if(dist>maxDist) maxDist = dist;
+        const rnd = hash(i*1.37+0.5);
+        cells[i] = {
+          x, y, dist, form: currentForm, rnd,
+          tphase: (rnd*2 - 1) * 150      // per-cell clock offset so nothing moves in lockstep
+        };
+        i++;
+      }
+    }
+  }
+
+  // ---- glyph drawing (vector strokes, scalable & rotatable) ------------
+  // all draw at origin; caller has already translated/rotated/scaled.
+  function pathFor(form, s){
+    const p = new Path2D();
+    switch(form){
+      case "CIRCLES": {
+        p.arc(0,0, s*0.30, 0, Math.PI*2);
+        break;
+      }
+      case "CROSSHAIRS": {
+        const a = s*0.30;
+        p.moveTo(-a,0); p.lineTo(a,0);
+        p.moveTo(0,-a); p.lineTo(0,a);
+        break;
+      }
+      case "LINES": {
+        const b = s*0.36;
+        p.moveTo(0,-b); p.lineTo(0,b);
+        break;
+      }
+      case "BRACKETS": {
+        const w = s*0.24, h = s*0.30, t = s*0.11;
+        // left  [
+        p.moveTo(-w+t,-h); p.lineTo(-w,-h); p.lineTo(-w,h); p.lineTo(-w+t,h);
+        // right ]
+        p.moveTo(w-t,-h);  p.lineTo(w,-h);  p.lineTo(w,h);  p.lineTo(w-t,h);
+        break;
+      }
+      case "DASHPIPES": {
+        const h = s*0.28;
+        // dash  -
+        p.moveTo(-s*0.30,0); p.lineTo(-s*0.04,0);
+        // pipe  |
+        p.moveTo(s*0.13,-h); p.lineTo(s*0.13,h);
+        break;
+      }
+    }
+    return p;
+  }
+
+  // cache the resting paths (recomputed only on layout via base size)
+  let baseSize = Math.min(cellW, cellH);
+  const pathCache = {};
+  function rebuildPaths(){
+    baseSize = Math.min(cellW, cellH);
+    for(const f of FORMS) pathCache[f] = pathFor(f, baseSize);
+  }
+
+  // ---- SHARED EFFECT FUNCTION ------------------------------------------
+  // ONE function per CATEGORY. Called for every emitter (center + cursor +
+  // future sources). `d` is the distance from THIS emitter to the cell, so the
+  // same wave logic radiates outward from whatever point calls it.
+  // Returns NORMALIZED signals so emitters can be summed cleanly:
+  //   b : brightness activation   0..1   (0 = dark, 1 = fully lit crest)
+  //   s : size deviation         -1..1   (grow / shrink ripple)
+  //   r : rotation               -1..1   (traveling twist; AUTOMATION only)
+  function effect(cell, d, t){
+    switch(currentCat){
+      case "ILLUMINATION": {
+        // bright bands sweeping outward from the emitter
+        const ph = t*0.0038 - d*0.020;
+        return { b: 0.5 + 0.5*Math.sin(ph), s: 0, r: 0 };
+      }
+      case "SCALE": {
+        // breathing size waves travelling out from the emitter
+        const ph = t*0.0036 - d*0.020;
+        const o = Math.sin(ph);
+        return { b: 0.30 + 0.45*(0.5+0.5*o), s: o, r: 0 };
+      }
+      case "AUTOMATION": {
+        // a traveling band of rotation radiating from the emitter
+        const ph = t*0.0040 - d*0.019;
+        const o = Math.sin(ph);
+        return { b: 0.28 + 0.55*(0.5+0.5*o), s: 0, r: o };
+      }
+      case "INTELLIGENCE": {
+        // irregular, computational flicker — a dense cluster of activations
+        const seed = cell.rnd;
+        const sp = 0.006*(0.45 + seed);
+        const raw  = 0.5 + 0.5*Math.sin(t*sp        + seed*6.2832 - d*0.012);
+        const raw2 = 0.5 + 0.5*Math.sin(t*sp*1.73   + seed*11.0   - d*0.022);
+        const b = Math.max(Math.pow(raw, 6), Math.pow(raw2, 8)); // sparse bright spikes
+        return { b, s: 0.18*b, r: 0 };
+      }
+    }
+    return { b: 0.6, s: 0, r: 0 };
+  }
+
+  // ---- interaction: trigger a ripple -----------------------------------
+  function triggerWave(type, target){
+    const now = performance.now();
+    // commit cells that were already past the midpoint of the previous wave,
+    // so an interrupted morph resolves to the form it was closest to.
+    if(wave.type === "form"){
+      for(const cell of cells){
+        const wp = clamp((now - (wave.t + cell.dist*WAVE_K))/WAVE_DUR, 0, 1);
+        if(wp >= 0.5) cell.form = wave.target;
+      }
+    }
+    wave = { t: now, type, target: target || currentForm };
+  }
+
+  function setForm(f){
+    if(f === currentForm) { triggerWave("form", f); return; }
+    currentForm = f;
+    triggerWave("form", f);
+    syncUI();
+  }
+  function setCat(c){
+    currentCat = c;
+    triggerWave("category", currentForm);  // pop wave activates the new mode
+    syncUI();
+  }
+
+  // ---- render ----------------------------------------------------------
+  function frame(now){
+    // black field
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0,0,W,H);
+
+    ctx.strokeStyle = "#fff";
+    ctx.lineWidth = 1.1;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+
+    const waveActive = (now - wave.t) < (maxDist*WAVE_K + WAVE_DUR + 50);
+
+    // ease presence (fade in/out) and let the glow TRAIL the mouse slightly
+    ptrPresence += (ptrTarget - ptrPresence) * 0.12;
+    if(ptrTarget > 0){
+      if(curX < -1e8){ curX = ptrX; curY = ptrY; }
+      curX += (ptrX - curX) * POS_LERP;
+      curY += (ptrY - curY) * POS_LERP;
+    }
+
+    // advance + prune ripples (each expands from its own fixed spawn point)
+    for(let k=ripples.length-1;k>=0;k--){
+      const rip = ripples[k];
+      const age = now - rip.born;
+      if(age >= RIP_LIFE){ ripples.splice(k,1); continue; }
+      const u = age / RIP_LIFE;
+      rip.r = age * RIP_SPEED;
+      const birth = age < 80 ? age/80 : 1;      // quick fade-in so it doesn't pop
+      rip.amp = (1-u)*(1-u) * birth;            // eased fade-out over its lifetime
+      const inner = Math.max(0, rip.r - 3*RIP_SIGMA);
+      const outer = rip.r + 3*RIP_SIGMA;
+      rip.inner2 = inner*inner;
+      rip.outer2 = outer*outer;
+    }
+    const nRip = ripples.length;
+    const glowVar = GLOW_SIGMA*GLOW_SIGMA;
+    const glowCut2 = (GLOW_SIGMA*3)*(GLOW_SIGMA*3);
+    const showGlow = ptrPresence > 0.002 && !reduceMotion && curX > -1e8;
+
+    for(let i=0;i<cells.length;i++){
+      const cell = cells[i];
+      const dist = cell.dist;
+      const tCell = now + cell.tphase;   // staggered per-cell clock
+
+      // ---- FIELD BASELINE + CENTER AMBIENT (unchanged) ----
+      let A = REST_ALPHA, S = REST_SCALE, Rrot = 0;
+      if(!reduceMotion){
+        const ec = effect(cell, dist, tCell);   // CENTER emitter: continuous waves
+        A += CEN_B * ec.b;
+        S += CEN_S * ec.s;
+        Rrot += CEN_R * ec.r;
+
+        // ---- CURSOR: ringless glow + anchored, self-expanding ripple wake ----
+        // Accumulate a spatial activation from the glow blob and every ripple
+        // ring, then interpret that activation through the active CATEGORY.
+        let M = 0, Rot = 0;   // M = unsigned magnitude, Rot = signed (rotation)
+
+        // soft glow under the pointer — a smooth blob, NO rings
+        if(showGlow){
+          const gx = cell.x - curX, gy = cell.y - curY;
+          const g2 = gx*gx + gy*gy;
+          if(g2 < glowCut2){
+            M += ptrPresence * GLOW_STRENGTH * Math.exp(-0.5 * g2 / glowVar);
+          }
+        }
+
+        // shed ripples — each a single expanding ring, anchored where it was born
+        for(let k=0;k<nRip;k++){
+          const rip = ripples[k];
+          const dx = cell.x - rip.x, dy = cell.y - rip.y;
+          const d2 = dx*dx + dy*dy;
+          if(d2 > rip.outer2 || d2 < rip.inner2) continue; // outside the ring band
+          const gd = (Math.sqrt(d2) - rip.r) / RIP_SIGMA;
+          const c = rip.amp * Math.exp(-0.5*gd*gd);        // gaussian ring profile
+          M += c;
+          Rot += c * rip.dir;
+        }
+
+        // interpret the activation through the active category
+        if(M > 0.0001){
+          switch(currentCat){
+            case "ILLUMINATION":
+              A += CUR_B * M; break;
+            case "SCALE":
+              S += CUR_S * M; A += CUR_B * 0.35 * M; break;
+            case "AUTOMATION":
+              Rrot += CUR_R * Rot; A += CUR_B * 0.35 * M; break;
+            case "INTELLIGENCE": {
+              const gate = Math.pow(0.5 + 0.5*Math.sin(now*0.02*(0.6+cell.rnd) + cell.rnd*40), 3);
+              A += CUR_B * M * gate;
+              S += CUR_S * 0.25 * M * gate;
+              break;
+            }
+          }
+        }
+      }
+
+      const fieldAlpha = reduceMotion ? STATIC_ALPHA : A;
+      const fieldScale = reduceMotion ? 1 : Math.max(0.15, S);
+
+      // wavefront progress for this cell (0 before arrival, 1 after passing)
+      let wp = 0, popping = false;
+      if(waveActive){
+        wp = clamp((now - (wave.t + dist*WAVE_K))/WAVE_DUR, 0, 1);
+        popping = wp > 0 && wp < 1;
+      } else if(wave.type === "form"){
+        cell.form = wave.target; // ensure committed when wave is long done
+      }
+
+      // transient control-change ripple — a one-shot front from center
+      let popScale = 1, popAlpha = 0;
+      if(popping && !reduceMotion){
+        const b = bell(wp);
+        popScale = 1 - 0.26*b + 0.10*bell(clamp(wp*1.25-0.18,0,1)); // dip then slight overshoot
+        popAlpha = 0.28*b;
+      }
+
+      // final composited render values
+      const alpha = clamp(fieldAlpha + popAlpha, 0.03, 1);
+      const scale = fieldScale * popScale;
+      const rot = reduceMotion ? 0 : Rrot;
+
+      ctx.save();
+      ctx.translate(cell.x, cell.y);
+      if(rot) ctx.rotate(rot);
+      if(scale !== 1) ctx.scale(scale, scale);
+
+      // form morph: while the front passes a 'form' wave, crossfade old->new
+      if(wave.type === "form" && popping && wave.target !== cell.form){
+        const blend = easeInOut(wp);
+        ctx.globalAlpha = alpha * (1 - blend);
+        ctx.stroke(pathCache[cell.form]);
+        ctx.globalAlpha = alpha * blend;
+        ctx.stroke(pathCache[wave.target]);
+      } else {
+        const f = (wave.type === "form" && wp >= 1) ? wave.target : cell.form;
+        ctx.globalAlpha = alpha;
+        ctx.stroke(pathCache[f]);
+      }
+
+      ctx.restore();
+    }
+
+    requestAnimationFrame(frame);
+  }
+
+  // ---- UI sync ---------------------------------------------------------
+  const statusEl = document.getElementById("status");
+  function syncUI(){
+    document.querySelectorAll("#catGroup .tg").forEach(b=>{
+      b.setAttribute("aria-pressed", String(b.dataset.cat === currentCat));
+    });
+    document.querySelectorAll("#formGroup .tg").forEach(b=>{
+      b.setAttribute("aria-pressed", String(b.dataset.form === currentForm));
+    });
+    statusEl.textContent = `FORM ${currentForm} · MODE ${currentCat}`;
+  }
+
+  document.getElementById("catGroup").addEventListener("click", e=>{
+    const b = e.target.closest(".tg"); if(!b) return; setCat(b.dataset.cat);
+  });
+  document.getElementById("formGroup").addEventListener("click", e=>{
+    const b = e.target.closest(".tg"); if(!b) return; setForm(b.dataset.form);
+  });
+
+  // ---- cursor emitter input --------------------------------------------
+  // The HUD (#hud, z-index 10) is the ONLY element that captures pointer
+  // events over the field; everything else is either the canvas or is set to
+  // pointer-events:none (.hint), so the whole viewport reaches this handler
+  // via the canvas below. We listen on window so there are no dead zones.
+  const hudEl = document.getElementById("hud");
+
+  function spawnRipple(x, y){
+    ripples.push({
+      x, y, born: performance.now(),
+      dir: (hash(x*0.123 + y*0.077 + (ripSeed++)) < 0.5 ? -1 : 1), // random twist for AUTOMATION
+      r: 0, amp: 0, inner2: 0, outer2: 0
+    });
+    if(ripples.length > MAX_RIPPLES) ripples.shift();
+  }
+
+  function movePointer(e){
+    // Suppress the cursor effect only while actually over the control panel.
+    if(hudEl.contains(e.target)){ ptrTarget = 0; return; }
+    // Map client coords -> canvas CSS-pixel space. cell.x/y live in CSS px
+    // (the canvas transform already bakes in devicePixelRatio), so we convert
+    // here rather than assuming clientX == canvas pixel. getBoundingClientRect
+    // is read live, so browser zoom / scroll / resize can never drift the map.
+    const rect = cv.getBoundingClientRect();
+    const nx = (e.clientX - rect.left) * (W / rect.width);
+    const ny = (e.clientY - rect.top)  * (H / rect.height);
+
+    // On (re)entry, anchor the spawn cursor here so we don't shed a line of
+    // ripples across the screen from wherever the pointer last was.
+    if(ptrTarget === 0 || lastSpawnX < -1e8){ lastSpawnX = nx; lastSpawnY = ny; }
+
+    // Shed one ripple per ~SPAWN_DIST of travel, spaced evenly along the path,
+    // so trail density is constant at any speed and there are none while still.
+    let sdx = nx - lastSpawnX, sdy = ny - lastSpawnY;
+    let sd = Math.hypot(sdx, sdy);
+    let guard = 0;
+    while(sd >= SPAWN_DIST && guard++ < 64){
+      const f = SPAWN_DIST / sd;
+      lastSpawnX += sdx * f;
+      lastSpawnY += sdy * f;
+      spawnRipple(lastSpawnX, lastSpawnY);
+      sdx = nx - lastSpawnX; sdy = ny - lastSpawnY; sd = Math.hypot(sdx, sdy);
+    }
+
+    ptrX = nx; ptrY = ny;
+    ptrTarget = 1;
+  }
+  window.addEventListener("pointermove", movePointer, { passive:true });
+  window.addEventListener("pointerdown", movePointer, { passive:true });
+  window.addEventListener("pointerleave", ()=>{ ptrTarget = 0; });   // left the window
+  window.addEventListener("pointerup", e=>{ if(e.pointerType !== "mouse") ptrTarget = 0; });
+
+  // ---- exports ---------------------------------------------------------
+  function download(href, name){
+    const a = document.createElement("a");
+    a.href = href; a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+  }
+
+  document.getElementById("exportPng").addEventListener("click", ()=>{
+    // render a clean resting frame (no HUD, full white, no ambient) offscreen
+    const off = document.createElement("canvas");
+    off.width = cv.width; off.height = cv.height;
+    const o = off.getContext("2d");
+    o.setTransform(dpr,0,0,dpr,0,0);
+    o.fillStyle = "#000"; o.fillRect(0,0,W,H);
+    o.strokeStyle = "#fff"; o.lineWidth = 1.1; o.lineCap = "round"; o.lineJoin = "round";
+    const path = pathCache[currentForm];
+    for(const cell of cells){
+      o.save(); o.translate(cell.x, cell.y); o.globalAlpha = 1; o.stroke(path); o.restore();
+    }
+    download(off.toDataURL("image/png"), `driver-${currentForm.toLowerCase()}.png`);
+  });
+
+  document.getElementById("exportVec").addEventListener("click", ()=>{
+    const s = baseSize;
+    const seg = []; // svg fragments
+    const line = (x1,y1,x2,y2)=>`<line x1="${x1.toFixed(2)}" y1="${y1.toFixed(2)}" x2="${x2.toFixed(2)}" y2="${y2.toFixed(2)}"/>`;
+    for(const cell of cells){
+      const X = cell.x, Y = cell.y;
+      switch(currentForm){
+        case "CIRCLES":
+          seg.push(`<circle cx="${X.toFixed(2)}" cy="${Y.toFixed(2)}" r="${(s*0.30).toFixed(2)}"/>`); break;
+        case "CROSSHAIRS": {
+          const a=s*0.30; seg.push(line(X-a,Y,X+a,Y), line(X,Y-a,X,Y+a)); break;
+        }
+        case "LINES": {
+          const b=s*0.36; seg.push(line(X,Y-b,X,Y+b)); break;
+        }
+        case "BRACKETS": {
+          const w=s*0.24,h=s*0.30,t=s*0.11;
+          seg.push(`<polyline points="${(X-w+t).toFixed(2)},${(Y-h).toFixed(2)} ${(X-w).toFixed(2)},${(Y-h).toFixed(2)} ${(X-w).toFixed(2)},${(Y+h).toFixed(2)} ${(X-w+t).toFixed(2)},${(Y+h).toFixed(2)}"/>`);
+          seg.push(`<polyline points="${(X+w-t).toFixed(2)},${(Y-h).toFixed(2)} ${(X+w).toFixed(2)},${(Y-h).toFixed(2)} ${(X+w).toFixed(2)},${(Y+h).toFixed(2)} ${(X+w-t).toFixed(2)},${(Y+h).toFixed(2)}"/>`);
+          break;
+        }
+        case "DASHPIPES": {
+          const h=s*0.28;
+          seg.push(line(X-s*0.30,Y,X-s*0.04,Y), line(X+s*0.13,Y-h,X+s*0.13,Y+h)); break;
+        }
+      }
+    }
+    const svg =
+`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
+<rect width="${W}" height="${H}" fill="#000"/>
+<g fill="none" stroke="#fff" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round">
+${seg.join("\n")}
+</g>
+</svg>`;
+    download("data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg), `driver-${currentForm.toLowerCase()}.svg`);
+  });
+
+  // ---- boot ------------------------------------------------------------
+  let resizeRAF = 0;
+  function onResize(){
+    cancelAnimationFrame(resizeRAF);
+    resizeRAF = requestAnimationFrame(()=>{ layout(); rebuildPaths(); });
+  }
+  window.addEventListener("resize", onResize);
+
+  layout();
+  rebuildPaths();
+  syncUI();
+  // intro ripple on load
+  requestAnimationFrame(()=>{ wave = { t: performance.now(), type:"form", target: currentForm }; });
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
